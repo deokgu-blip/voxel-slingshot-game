@@ -368,6 +368,8 @@ window.GAME_AUDIO = {};</script>
     LAUNCH_POWER_SCALE: 6.5,
     LAUNCH_POWER_MAX: 1400,
     LAUNCH_POWER_MIN: 360,
+    LAUNCH_UP_BOOST: 60,
+    LAUNCH_FORWARD_RATIO: 0.06,
     PROJECTILE_RADIUS: 3.2,
     PROJECTILE_SPEED_BASE: 900,
     VOXEL_WORLD: 7.4,
@@ -402,6 +404,8 @@ window.GAME_AUDIO = {};</script>
     GRAVITY: { label: '중력 가속도(월드/초^2)', min: 40, max: 600, step: 10 },
     LAUNCH_POWER_SCALE: { label: '드래그 거리 → 세기 배율', min: 1, max: 20, step: 0.5 },
     LAUNCH_POWER_MAX: { label: '발사 세기 상한(월드/초)', min: 400, max: 3000, step: 50 },
+    LAUNCH_UP_BOOST: { label: '발사 상향 보강(위로 솟는 성분)', min: 0, max: 300, step: 5 },
+    LAUNCH_FORWARD_RATIO: { label: '발사 깊이(-z) 전진 비율(작을수록 화면평면 슛)', min: 0, max: 0.5, step: 0.01 },
     LAUNCH_POWER_MIN: { label: '발사 세기 하한(월드/초)', min: 100, max: 1200, step: 20 },
     PROJECTILE_RADIUS: { label: '탄 충돌 반경(복셀 단위)', min: 0.5, max: 5, step: 0.1 },
     PROJECTILE_SPEED_BASE: { label: '탄 기본 속도(탭 발사용)', min: 200, max: 2000, step: 50 },
@@ -1147,7 +1151,7 @@ window.GAME_AUDIO = {};</script>
   function computeAnchor() {
     updateSlingGeom();
     computePocket();
-    anchor.x = sling.pocketX; anchor.y = sling.pocketY; anchor.z = sling.pocketZ;
+    anchor.x = sling.pocketX; anchor.y = sling.pocketY; anchor.z = sling.baseZ;
   }
 
   // 현재 조준 방향/세기 산출 — 발사벡터 = 주머니 → 갈래중심(당긴 반대), 세기 ∝ 당긴 거리
@@ -1156,14 +1160,11 @@ window.GAME_AUDIO = {};</script>
     const pullPx = clampPull();
     let power = pullPx * C.LAUNCH_POWER_SCALE;
     if (power > C.LAUNCH_POWER_MAX) power = C.LAUNCH_POWER_MAX;
-    // 방향: 주머니에서 갈래중심으로 (당긴 반대) + 모델(−z) 쪽 전진 성분
+    // 방향: 주머니 → 갈래중심(당긴 반대) = 화면상 위쪽. 오리는 z=0 평면 중심이므로
+    //   화면평면(z≈0) 슛으로 중앙 칼럼을 관통(깊이는 반경 + 자동회전이 커버). 깊이(-z) 전진은 소량만.
     let dx = sling.forkCX - sling.pocketX;
-    let dy = sling.forkCY - sling.pocketY;
-    // 전진(−z): 당길수록 더 멀리. 화면 아래로 당긴 양(aimDY>0)에 비례.
-    const pull = Math.max(0, player.aimDY);
-    let dz = -(pull * C.PULL_VISUAL_SCALE * (Math.abs(sling.forkRX - sling.forkLX) / (2 * C.SLING_FORK_HALF_PX)) + Math.abs(dy) * 0.9 + 80);
-    // 위로 솟는 성분 보강(자연스러운 포물선)
-    dy = dy + Math.abs(dz) * 0.34 + 50;
+    let dy = (sling.forkCY - sling.pocketY) + C.LAUNCH_UP_BOOST;
+    let dz = -Math.abs(dy) * C.LAUNCH_FORWARD_RATIO;
     const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
     aimOut.dx = dx / len; aimOut.dy = dy / len; aimOut.dz = dz / len;
     aimOut.power = power;
@@ -1634,7 +1635,11 @@ window.GAME_AUDIO = {};</script>
           voxelsAlive: game.voxelsAlive, ammoIndex: game.ammoIndex,
           ammoTotal: ammoQueue.length, projActive: proj.active,
           modelYaw: game.modelYaw, modelPitch: game.modelPitch,
-          activeDebris: debrisPool.reduce(function (a, d) { return a + (d.active ? 1 : 0); }, 0)
+          activeDebris: debrisPool.reduce(function (a, d) { return a + (d.active ? 1 : 0); }, 0),
+          projX: proj.px, projY: proj.py, projZ: proj.pz,
+          modelCx: voxModelGroup ? voxModelGroup.position.x : 0,
+          modelCy: voxModelGroup ? voxModelGroup.position.y : 0,
+          modelCz: voxModelGroup ? voxModelGroup.position.z : 0
         };
       },
       // 프로그램적 발사: dir(월드 단위 벡터) + power로 직접 쏨. radiusMul/budgetOverride로 카빙 강도 조절(테스트 전용)
