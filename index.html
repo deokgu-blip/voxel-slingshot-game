@@ -113,6 +113,24 @@
       "path": ["COHESION"],
       "description": "붕괴 접착력(0~1). 높을수록 끊긴 덩어리가 함께(공유 속도) 우르르 낙하, 낮을수록 낱개로 흩어져 떨어짐."
     },
+    "config.MIN_LOFT": {
+      "section": "game-config",
+      "symbol": "GAME_CONFIG.MIN_LOFT",
+      "path": ["MIN_LOFT"],
+      "description": "최소 로프트. 거의 수평으로 조준해도 발사 위 성분을 수평 크기의 이 비율 이상으로 보장해 포물선이 항상 보이게 한다(0=강제 없음). 거리감은 착탄 링이 풀고 궤적은 호를 항상 보여줌."
+    },
+    "config.AIM_MARKER_SIZE": {
+      "section": "game-config",
+      "symbol": "GAME_CONFIG.AIM_MARKER_SIZE",
+      "path": ["AIM_MARKER_SIZE"],
+      "description": "조준 중 표시되는 착탄 조준 링의 크기(복셀 단위 배율). 예측 착탄점에 카메라를 향해 빌보드로 표시된다."
+    },
+    "config.TRAJECTORY_BRIGHTNESS": {
+      "section": "game-config",
+      "symbol": "GAME_CONFIG.TRAJECTORY_BRIGHTNESS",
+      "path": ["TRAJECTORY_BRIGHTNESS"],
+      "description": "궤적 미리보기 점의 밝기 배율(가산 블렌딩). 클수록 포물선이 더 또렷·밝게 보인다."
+    },
     "asset.model_main": {
       "section": "game-config",
       "symbol": "GAME_ASSETS.model_main",
@@ -152,6 +170,11 @@
       "section": "game-logic",
       "symbol": "resolveCollapse",
       "description": "한 발 파괴 직후 바닥(anchor)에서 6-이웃 flood-fill로 지지 여부 판정. 지지 끊긴 복셀/덩어리를 낙하(중력 적분·텀블)로 전환하는 구조 붕괴 처리."
+    },
+    "logic.placeAimMarker": {
+      "section": "game-logic",
+      "symbol": "placeAimMarker",
+      "description": "조준 중 예측 착탄점(궤적이 복셀에 처음 닿는 월드 좌표)에 조준 링을 배치하는 함수. 매 조준 프레임 updateTrajectory가 호출하며, 빗나감이면 색을 흐리게 표시한다."
     }
   }
 }
@@ -437,7 +460,11 @@ window.GAME_AUDIO = {};</script>
     MODEL_DEPTH_Z: 500,
     TRAJECTORY_DOTS: 64,
     TRAJECTORY_DT: 0.014,
-    TRAJECTORY_DOT_SIZE: 14,
+    TRAJECTORY_DOT_SIZE: 20,
+    TRAJECTORY_BRIGHTNESS: 1.45,
+    MIN_LOFT: 0.34,
+    AIM_MARKER_SIZE: 1.85,
+    AIM_MARKER_PULSE: 3.4,
     AIM_ZONE_TOP_PX: 540,
     WIN_DELAY_MS: 700,
     SLING_ANCHOR_Y_PX: 730,
@@ -480,7 +507,11 @@ window.GAME_AUDIO = {};</script>
     MODEL_DEPTH_Z: { label: '모델 장면 안쪽 깊이(-z 월드, 클수록 멀리/안쪽)', min: 0, max: 700, step: 20 },
     TRAJECTORY_DOTS: { label: '궤적 미리보기 점 수', min: 4, max: 64, step: 1 },
     TRAJECTORY_DT: { label: '궤적 점 시간 간격(초)', min: 0.01, max: 0.08, step: 0.002 },
-    TRAJECTORY_DOT_SIZE: { label: '궤적 점 크기(px)', min: 4, max: 20, step: 1 },
+    TRAJECTORY_DOT_SIZE: { label: '궤적 점 크기(px)', min: 4, max: 28, step: 1 },
+    TRAJECTORY_BRIGHTNESS: { label: '궤적 밝기 배율', min: 0.6, max: 2, step: 0.05 },
+    MIN_LOFT: { label: '최소 로프트(곧은 발사도 보이는 포물선 정도, 0=없음)', min: 0, max: 0.7, step: 0.02 },
+    AIM_MARKER_SIZE: { label: '착탄 조준 링 크기(복셀 단위)', min: 0.8, max: 4, step: 0.05 },
+    AIM_MARKER_PULSE: { label: '착탄 링 펄스 속도', min: 0, max: 8, step: 0.2 },
     AIM_ZONE_TOP_PX: { label: '조준 존 상단 y(px, 아래=조준)', min: 360, max: 800, step: 10 },
     WIN_DELAY_MS: { label: '클리어 오버레이 지연(ms)', min: 0, max: 2500, step: 100 },
     SLING_ANCHOR_Y_PX: { label: '새총 앵커 y(px, 발사 시작 지점)', min: 560, max: 830, step: 10 },
@@ -731,6 +762,12 @@ window.GAME_AUDIO = {};</script>
   let projMat = null;           // 탄 머티리얼(타입별 색 재적용)
   let projDrillMat = null;      // 드릴 머티리얼
   let trajMesh = null;         // 궤적 미리보기 Points
+  let aimMarkerGroup = null;   // 착탄 조준 링(토러스+디스크) — 조준 중 예측 착탄점 표시(재사용)
+  let aimMarkerRing = null;    // 링(토러스)
+  let aimMarkerCore = null;    // 중앙 디스크(타겟 점)
+  let aimMarkerRingMat = null; // 링 머티리얼(명중/빗나감 색)
+  let aimMarkerCoreMat = null; // 디스크 머티리얼
+  const aimMarker = { hit: false, x: 0, y: 0, z: 0 };   // 마지막 예측 착탄점(월드) + 명중여부
   let debrisMesh = null;       // 디브리 InstancedMesh
   const debrisPool = [];       // {active,x,y,z,vx,vy,vz,colorIdx,life,maxLife}
 
@@ -866,6 +903,7 @@ window.GAME_AUDIO = {};</script>
 
     initProjectile();
     initTrajectory();
+    initAimMarker();
     initDebris();
     initSlingshot();
     view.ready = true;
@@ -922,24 +960,51 @@ window.GAME_AUDIO = {};</script>
     geo.setDrawRange(0, 0);
     const mat = new THREE.ShaderMaterial({
       transparent: true, depthTest: false, depthWrite: false,
-      uniforms: { uSize: { value: C.TRAJECTORY_DOT_SIZE * (view.renderer.getPixelRatio() || 1) } },
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uSize: { value: C.TRAJECTORY_DOT_SIZE * (view.renderer.getPixelRatio() || 1) },
+        uBright: { value: C.TRAJECTORY_BRIGHTNESS }
+      },
       vertexShader:
         'attribute float aAlpha; varying float vA;' +
         'uniform float uSize;' +
         'void main(){ vA=aAlpha; vec4 mv=modelViewMatrix*vec4(position,1.0);' +
         'gl_Position=projectionMatrix*mv; gl_PointSize=uSize; }',
       fragmentShader:
-        'varying float vA;' +
+        'varying float vA; uniform float uBright;' +
         'void main(){ vec2 c=gl_PointCoord-vec2(0.5); float d=length(c);' +
-        'if(d>0.5) discard; float core=smoothstep(0.5,0.16,d);' +
-        'vec3 col=mix(vec3(1.0,0.72,0.18), vec3(1.0,0.96,0.74), core);' +
-        'gl_FragColor=vec4(col, vA*core); }'
+        'if(d>0.5) discard; float core=smoothstep(0.5,0.12,d); float glow=smoothstep(0.5,0.0,d);' +
+        'vec3 col=mix(vec3(1.0,0.66,0.14), vec3(1.0,0.98,0.82), core);' +
+        'gl_FragColor=vec4(col*uBright, vA*(core*0.85+glow*0.4)); }'
     });
     trajMesh = new THREE.Points(geo, mat);
     trajMesh.renderOrder = 6;
     trajMesh.frustumCulled = false;
     trajMesh.visible = false;
     view.scene.add(trajMesh);
+  }
+
+  // 착탄 조준 링: 토러스(외곽 링) + 얇은 디스크(중심 타겟) — depthTest off로 모델에 안 가림.
+  //  1회 생성 후 위치/스케일/색만 갱신(루프 내 new 0). 카메라를 향하도록 빌보드 정렬.
+  function initAimMarker() {
+    aimMarkerGroup = new THREE.Group();
+    aimMarkerGroup.renderOrder = 7;
+    aimMarkerGroup.frustumCulled = false;
+    aimMarkerGroup.visible = false;
+    const r = C.VOXEL_WORLD;   // 단위(복셀1칸) → AIM_MARKER_SIZE로 그룹 스케일
+    const ringGeo = new THREE.TorusGeometry(r, r * 0.18, 10, 28);
+    aimMarkerRingMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.95, depthTest: false, depthWrite: false });
+    aimMarkerRingMat.color.setStyle('#ffe14d').convertSRGBToLinear();
+    aimMarkerRing = new THREE.Mesh(ringGeo, aimMarkerRingMat);
+    aimMarkerRing.renderOrder = 7;
+    aimMarkerGroup.add(aimMarkerRing);
+    const coreGeo = new THREE.CircleGeometry(r * 0.42, 22);
+    aimMarkerCoreMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0.7, depthTest: false, depthWrite: false });
+    aimMarkerCoreMat.color.setStyle('#fff6c2').convertSRGBToLinear();
+    aimMarkerCore = new THREE.Mesh(coreGeo, aimMarkerCoreMat);
+    aimMarkerCore.renderOrder = 7;
+    aimMarkerGroup.add(aimMarkerCore);
+    view.scene.add(aimMarkerGroup);
   }
 
   // 슬링샷(절차적 Y자) + 주머니 탄 + 고무줄 2가닥 초기화
@@ -1087,6 +1152,7 @@ window.GAME_AUDIO = {};</script>
     if (projMesh) projMesh.visible = false;
     if (projDrillMesh) projDrillMesh.visible = false;
     if (trajMesh) trajMesh.visible = false;
+    hideAimMarker();
     winTimer = 0;
     hideOverlay();
 
@@ -1565,6 +1631,11 @@ window.GAME_AUDIO = {};</script>
     let dy = upPull;
     let dz = -upPull * C.LAUNCH_BACK_RATIO;
     let dx = sidePull;
+    // 최소 로프트: 곧게(거의 수평) 쏴도 포물선이 시각적으로 드러나도록 위 성분(dy)을
+    //  수평성분(dx,dz) 크기의 일정 비율 이상으로 보장. 거리감은 마커가 풀고, 궤적은 항상 호를 보임.
+    const horiz = Math.sqrt(dx * dx + dz * dz);
+    const minDy = horiz * C.MIN_LOFT;
+    if (dy < minDy) dy = minDy;
     const len = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1;
     aimOut.dx = dx / len; aimOut.dy = dy / len; aimOut.dz = dz / len;
     aimOut.power = power;
@@ -1714,6 +1785,7 @@ window.GAME_AUDIO = {};</script>
     const t = ammoTypeAt(game.ammoIndex);
     applyTypeToProj(t, aimOut.dx, aimOut.dy, aimOut.dz, power);
     if (trajMesh) trajMesh.visible = false;
+    hideAimMarker();
     // 주머니 탄/고무줄/숫자 숨김(발사한 자리에서 출발)
     if (pocketMesh) pocketMesh.visible = false;
     if (pocketDrillMesh) pocketDrillMesh.visible = false;
@@ -1743,6 +1815,7 @@ window.GAME_AUDIO = {};</script>
     const dtp = C.TRAJECTORY_DT;
     let w = 0;
     let shown = 0;
+    let hit = false;
     for (let i = 0; i < dots; i++) {
       // 실제 발사와 동일한 적분(타입 grav 동일) — 예측=실제 일치
       vy -= grav * dtp;
@@ -1751,13 +1824,40 @@ window.GAME_AUDIO = {};</script>
       trajAlpha[i] = 1.0 - (i / dots) * 0.78;
       w += 3; shown++;
       // 예측 충돌: 이 점이 alive 복셀 안이면 거기서 미리보기 종료(예측=실제 착탄점)
-      if (predictHitsVoxel(px, py, pz)) break;
+      if (predictHitsVoxel(px, py, pz)) { hit = true; break; }
     }
     trajMesh.geometry.attributes.position.needsUpdate = true;
     trajMesh.geometry.attributes.aAlpha.needsUpdate = true;
     trajMesh.geometry.setDrawRange(0, shown);
     trajMesh.visible = true;
+    // 착탄 조준 링: 궤적의 마지막 점(=예측 착탄점)에 표시. 빗나감이면 빗나감 색.
+    aimMarker.hit = hit; aimMarker.x = px; aimMarker.y = py; aimMarker.z = pz;
+    placeAimMarker();
   }
+
+  // 착탄 링을 예측 착탄점(aimMarker)에 배치 — 카메라 빌보드 + 펄스 + 명중/빗나감 색(루프 내 new 0)
+  function placeAimMarker() {
+    if (!aimMarkerGroup) return;
+    aimMarkerGroup.visible = true;
+    aimMarkerGroup.position.set(aimMarker.x, aimMarker.y, aimMarker.z);
+    // 카메라를 향하도록 회전(빌보드) — 링 평면이 화면에 정면
+    aimMarkerGroup.quaternion.copy(view.camera.quaternion);
+    // 펄스(시간 기반) — 또렷이 눈에 띄게. geo는 이미 VOXEL_WORLD 기준이라 SIZE는 그 배율.
+    const pulse = 1 + 0.16 * Math.sin(simTime * C.AIM_MARKER_PULSE);
+    const s = C.AIM_MARKER_SIZE * pulse;
+    aimMarkerGroup.scale.set(s, s, s);
+    if (aimMarker.hit) {
+      aimMarkerRingMat.color.setStyle('#ffe14d').convertSRGBToLinear();
+      aimMarkerCoreMat.color.setStyle('#fff6c2').convertSRGBToLinear();
+      aimMarkerRingMat.opacity = 0.96; aimMarkerCoreMat.opacity = 0.72;
+    } else {
+      // 빗나감: 흐릿한 회청색 + 중심 점 숨김에 가깝게
+      aimMarkerRingMat.color.setStyle('#7f8aa6').convertSRGBToLinear();
+      aimMarkerCoreMat.color.setStyle('#7f8aa6').convertSRGBToLinear();
+      aimMarkerRingMat.opacity = 0.5; aimMarkerCoreMat.opacity = 0.0;
+    }
+  }
+  function hideAimMarker() { if (aimMarkerGroup) aimMarkerGroup.visible = false; }
 
   // 월드 점이 alive 복셀 안인지(궤적 예측 착탄 판정) — collideProjectile와 동일 변환
   function predictHitsVoxel(wx, wy, wz) {
@@ -2160,6 +2260,7 @@ window.GAME_AUDIO = {};</script>
         updateTrajectory();
       } else if (trajMesh && game.phase !== PHASE.AIMING) {
         trajMesh.visible = false;
+        hideAimMarker();
       }
 
       if (game.phase === PHASE.FLYING) updateProjectile(dt);
@@ -2334,8 +2435,12 @@ window.GAME_AUDIO = {};</script>
         game.phase = PHASE.READY;
         player.aiming = false;
         player.aimDX = 0; player.aimDY = 0;
+        hideAimMarker();
         layoutSlingshot();
       },
+      // 실제 발사 경로(launchProjectile)를 그대로 호출 — 현재 조준(aimTo) 벡터로 발사.
+      //  마커(aimMarker)의 예측 착탄점이 '실제 같은 발사'의 첫 명중점과 일치하는지 검증용.
+      launchCurrent: function () { launchProjectile(); return proj.active; },
       // yaw-only: pitch 인자는 무시(항상 0). 시그니처는 계약 유지.
       setRotation: function (yaw, pitch) { game.modelYaw = yaw; game.modelPitch = 0; if (voxModelGroup) applyModelRotation(); },
       speed: function (x) { testTimeScale = x || 1; },
@@ -2376,6 +2481,17 @@ window.GAME_AUDIO = {};</script>
             sx: Math.round((tmpV.x * 0.5 + 0.5) * DESIGN_W), sy: Math.round((-tmpV.y * 0.5 + 0.5) * DESIGN_H) });
         }
         return out;
+      },
+      // 조준 착탄 링의 예측 착탄점(월드 + 화면px) + 명중여부 + 표시상태. updateTrajectory 후 최신값 반환.
+      //  마커=실제착탄 일치 검증에 사용(aimMarker() 발사 전 → fireBallistic으로 같은 점 명중).
+      aimMarker: function () {
+        updateTrajectory();
+        tmpV.set(aimMarker.x, aimMarker.y, aimMarker.z).project(view.camera);
+        return {
+          hit: aimMarker.hit, visible: !!(aimMarkerGroup && aimMarkerGroup.visible),
+          x: aimMarker.x, y: aimMarker.y, z: aimMarker.z,
+          sx: Math.round((tmpV.x * 0.5 + 0.5) * DESIGN_W), sy: Math.round((-tmpV.y * 0.5 + 0.5) * DESIGN_H)
+        };
       },
       // 모델 그룹의 월드 bbox 8코너를 화면(px)으로 투영 → 구도 검증(모델이 상단에·슬링샷과 안 겹침).
       modelScreen: function () {
